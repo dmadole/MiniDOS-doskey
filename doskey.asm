@@ -27,39 +27,32 @@
             dw    end-start
             dw    start
 
-start:      br    entry
+start:      br    chkvers
 
           ; Build information
 
-            db    8+80h                 ; month
-            db    31                    ; day
+            db    9+80h                 ; month
+            db    6                     ; day
             dw    2025                  ; year
-            dw    1                     ; build
+            dw    2                     ; build
 
             db    'See github.com/dmadole/MiniDOS-doskey for more info',0
-
-
-          ; Output an informative banner to start.
-
-entry:      sep   scall
-            dw    o_inmsg
-            db    'DOS/Key Line Editor Build 1 for Mini/DOS',13,10,0
 
 
           ; Check minimum needed kernel version 0.4.0 in order to have
           ; heap manager available.
 
-            ldi   k_ver.1               ; pointer to installed kernel version
+chkvers:    ldi   k_ver.1               ; pointer to installed kernel version
             phi   rd
             ldi   k_ver.0
             plo   rd
 
             lda   rd                    ; if major is non-zero then good
-            lbnz  loadmod
+            lbnz  skipspc
 
             lda   rd                    ; if minor is 4 or more then good
             smi   4
-            lbdf  loadmod
+            lbdf  skipspc
 
             sep   scall                 ; quit with error message
             dw    o_inmsg
@@ -67,11 +60,52 @@ entry:      sep   scall
             sep   sret
 
 
+          ; Parse command line arguments, we accept one, which is the '-d' 
+          ; option signifying that Backspace (Control-H) should be destructive
+          ; like the Delete key.
+
+skipspc:    lda   ra                    ; skip any leading spaces
+            lbz   loadmod
+            sdi   ' '
+            lbdf  skipspc
+
+            sdi   ' '-'-'               ; if not a dash then error
+            lbnz  dousage
+
+            lda   ra                    ; if not a 'd' then error
+            smi   'd'
+            lbnz  dousage
+
+            ldi   backkey.1             ; get pointer to bz instruction
+            phi   rf
+            ldi   backkey.0
+            plo   rf
+
+            ldi   delete                ; change target of branch
+            inc   rf
+            str   rf
+
+skipend:    lda   ra                    ; skip any spaces at end
+            lbz   loadmod
+            sdi   ' '
+            lbdf  skipend
+
+dousage:    sep   scall                 ; give a hint if error
+            dw    o_inmsg
+            db    'USAGE: doskey [-d]',13,10,0
+            sep   sret
+
+
           ; Allocate a page-aligned block from the heap for storage of
           ; the persistent code module. Make it permanent so it will
           ; not get cleaned up at program exit.
 
-loadmod:    ldi   1+(modend-module).1   ; length of module plus history
+loadmod:    sep   scall
+            dw    o_inmsg
+            db    'DOS/Key Line Editor Build 2 for Mini/DOS',13,10,0
+
+
+            ldi   1+(modend-module).1   ; length of module plus history
             phi   rc
             ldi   (modend-module).0
             plo   rc
@@ -211,17 +245,25 @@ hooktab:    dw    o_input, input
 
             org   (($-1)|255)+1
 
+
+          ; ------------------------------------------------------------------
 module:   ; This is the module that is loaded into memory to replace the
           ; F_INPUT and _FINPUTL BIOS routines. For either routine, a buffer
           ; is pointed to by RF on entry, and the length of the input is
           ; returned in RC. The general internal register usage is:
           ;
-          ;   R9 - General working register and  pointer
-          ;   RA - Characters to the left of the cursor
-          ;   RB - Characters to the right of the cursor
-          ;   RC - Number of bytes free in the buffer
-          ;   RD - Pointer to the current place in history
-          ;   RF - Pointer into buffer at cursor position
+          ;   R9   - General working register and pointer
+          ;   RA.0 - Characters to the left of the cursor
+          ;   RB.0 - Characters to the right of the cursor
+          ;   RC.0 - Number of bytes free in the buffer
+          ;   RD   - Pointer to the current place in history
+          ;   RF   - Pointer into buffer at cursor position
+          ;
+          ; The MSB of some are used for purposes unrelated to the LSB:
+          ;
+          ;   RA.1 - Holds MSB of first page for exit use
+          ;   RB.1 - If non-zero then line should be saved
+          ;   RC.1 - Used in endline to hold exit status
 
           ; If called at INPUTL, then the maximum length is in register RC.
           ; But we impose a limit of 255 bytes, so if what is passed is more
@@ -231,11 +273,10 @@ inputl:     ghi   rc                    ; skip if length is 255 or less
             bz    noadjus
 
           ; If called at INPUT, the limit is fixed at 255 bytes maximum.
+          ; We only use RC.0 internally but will set RC.1 to zero at exit.
 
-input:      ldi   0                     ; else set maximum length to 255
+input:      ldi   255                   ; else set maximum length to 255
             plo   rc
-            dec   rc
-            phi   rc
 
 noadjus:    glo   r9
             stxd
@@ -266,21 +307,30 @@ noadjus:    glo   r9
             ani   %11111110             ; clear bit 0 which is echo mode
             phi   re
 
+          ; This variable is the pointer to the end of the history buffer,
+          ; pointing to the zero at the end of the last line. Only the LSB
+          ; needs to be kept since the buffer in one integral memory page.
+          ; It is stored as an LDI argument that is updated in place.
+
+pointer:    equ   $+1                   ; points to the ldi argument below
+
+            ldi   0                     ; get pointer to last buffer line
+            plo   rd
+
+            ghi   r3                    ; save for later variable reference
+            phi   ra
+
+            smi   1                     ; set msb of last line pointer
+            phi   rd
+
+          ; Start with an empty line, no characters to the left or right.
+
             ldi   0                     ; start with the input line empty
             plo   ra
             plo   rb
 
-            ghi   r3                    ; set msb of pointer and buffer
-            phi   r9
-            smi   1
-            phi   rd
 
-            ldi   pointer               ; get pointer to last buffer line
-            plo   r9
-            ldn   r9
-            plo   rd
-
-
+          ; ------------------------------------------------------------------
           ; This is the main loop that gets keystrokes from the termianl and
           ; processes them.
 
@@ -288,17 +338,23 @@ inploop:    sep   scall                 ; get next keystroke and save it
             dw    o_readkey
             plo   re
 
-            smi   3                     ; if control-c (ascii 3)
-            lbz   endline
-
-            smi   8-3                   ; if control-h (ascii 8, backspace)
+            smi   2                     ; if control-b (ascii 2)
             bz    movleft
 
+            smi   3-2                   ; if control-c (ascii 3)
+            lbz   endline
+
+            smi   6-3                   ; if control-f (ascii 6)
+            bz    mvright
+   
+            smi   8-6                   ; if control-h (ascii 8, backspace)
+backkey:    bz    movleft
+
             smi   10-8                  ; if control-j (ascii 10, linefeed)
-            bz    forward
+            lbz   forward
  
             smi   11-10                 ; if control-k (ascii 11)
-            bz    backwrd
+            lbz   backwrd
 
             smi   12-11                 ; if control-l (ascii 12)
             bz    mvright
@@ -306,7 +362,13 @@ inploop:    sep   scall                 ; get next keystroke and save it
             smi   13-12                 ; if control-m (ascii 13, return)
             lbz   endline
 
-            smi   27-13                 ; if control-[ (ascii 27, escape)
+            smi   14-13                 ; if control-n (ascii 14)
+            lbz   forward
+ 
+            smi   16-14                 ; if control-p (ascii 16)
+            lbz   backwrd
+ 
+            smi   27-16                 ; if control-[ (ascii 27, escape)
             bz    escapes
 
             smi   32-27                 ; if anything else < 32 then ignore
@@ -318,11 +380,14 @@ inploop:    sep   scall                 ; get next keystroke and save it
             bdf   inploop               ; if anything > 127 then ignore
 
 
+          ; ------------------------------------------------------------------
           ; If nothing else, then this is a printable character, insert it
           ; into the line buffer at the cursor position.
 
             glo   rc                    ; ignore if buffer is already full
             bz    inploop
+
+            phi   rb                    ; mark that line has been changed
 
             glo   rb                    ; run through characters to right
             plo   r9
@@ -375,11 +440,14 @@ nxtback:    bz    inploop               ; get next character if all processed
             br    nxtback
 
 
+          ; ------------------------------------------------------------------
           ; Delete a character to the left of the cursor, moving everything
           ; to the right one space to the left.
 
 delete:     glo   ra                    ; ignore if at the start of line
             bz    inploop
+
+            phi   rb                    ; mark that line has been changed
 
           ; All the characters from to cursor to the end of the line need to
           ; be moved one space to the left, both in memory and on the screen.
@@ -425,35 +493,73 @@ delskip:    sep   scall                 ; erase last character on the line
             br    movback               ; adjust pointer and position cursor
 
 
+          ; ------------------------------------------------------------------
 escapes:    sep   scall                 ; get second character of escape
             dw    o_readkey
 
             smi   'O'                   ; if in application mode proceed
-            bz    getnext
+            bz    escapes 
 
             smi   '['-'O'               ; else if not [ then ignore rest
-            bnz   inploop
+            bz    escapes
 
 getnext:    sep   scall                 ; get third character of escape
             dw    o_readkey
 
             smi   'A'                   ; if A then previous line
-            bz    backwrd
+            lbz   backwrd
 
             bnf   getnext               ; absorb anything less than A
 
             smi   'B'-'A'               ; if B then next line
-            bz    forward
+            lbz   forward
 
             smi   'C'-'B'               ; if C then cursor left
             bz    mvright
 
             smi   'D'-'C'               ; if D then cursor right
-            lbz   movleft
+            bz    movleft
 
             br    inploop               ; ignore anything else
 
 
+          ; ------------------------------------------------------------------
+          ; Move the cursor one space to the left.
+
+movleft:    glo   ra                    ; ignore if at the start of the line
+            bz     inploop
+
+dobacks:    dec   ra                    ; move cursor to the left in buffer
+            inc   rb
+            dec   rf
+
+            ldi   8                     ; echo a backspace to the terminal
+            sep   scall                 ; output character to move cursor
+            dw    o_type
+ 
+            br    inploop
+
+
+          ; ------------------------------------------------------------------
+          ; Move the cursor one space to the right.
+
+mvright:    glo   rb                    ; ignore if at the end of the line
+            bz    inploop
+
+doforwd:    inc   ra                    ; move to the right in buffer
+            dec   rb
+            lda   rf
+
+outchar:    sep   scall                 ; output character to move cursor
+            dw    o_type
+
+            br     inploop
+
+
+
+            org   (($-1)|255)+1
+
+          ; ------------------------------------------------------------------
           ; Search forward for the next line in the history to restore. If
           ; there is no next line, ignore the operation.
 
@@ -464,7 +570,7 @@ forward:    glo   rd                    ; point r9 to next byte after rd
             phi   r9
 
             ldn   r9                    ; if there is no next line, ignore
-            bz    inploop
+            lbz   inploop
 
 nextlin:    ghi   r9                    ; move to end of the next line
             inc   r9
@@ -474,6 +580,7 @@ nextlin:    ghi   r9                    ; move to end of the next line
 
             br    restore               ; restore line from history
 
+          ; ------------------------------------------------------------------
           ; Search backwards for the prior line in the history to restore.
           ; If there is no prior line, ignore the operation.
 
@@ -484,7 +591,7 @@ backwrd:    glo   rd                    ; point r9 to prior byte before rd
             phi   r9
 
             ldn   r9                    ; if there is no prior line, ignore
-            bz    inploop
+            lbz   inploop
 
 prevlin:    ghi   r9                    ; move to end of the prior line
             dec   r9
@@ -498,49 +605,10 @@ prevlin:    ghi   r9                    ; move to end of the prior line
 restore:    glo   r9                    ; update line pointer to prior line
             plo   rd
 
-            lbr   tofirst               ; copy prior line into line buffer
+            br    tofirst               ; copy prior line into line buffer
 
 
-          ; Move the cursor one space to the left.
-
-movleft:    glo   ra                    ; ignore if at the start of the line
-            bz    inploop
-
-dobacks:    dec   ra                    ; move cursor to the left in buffer
-            inc   rb
-            dec   rf
-
-            ldi   8                     ; echo a backspace to the terminal
-            sep   scall                 ; output character to move cursor
-            dw    o_type
- 
-            br    inploop
-
-
-          ; Move the cursor one space to the right.
-
-mvright:    glo   rb                    ; ignore if at the end of the line
-            bz    inploop
-
-doforwd:    inc   ra                    ; move to the right in buffer
-            dec   rb
-            lda   rf
-
-outchar:    sep   scall                 ; output character to move cursor
-            dw    o_type
-
-            br    inploop
-
-
-          ; This variable is the pointer to the end of the history buffer,
-          ; pointing to the zero at the end of the last line. Only the LSB
-          ; needs to be kept since the buffer in one integral memory page.
-
-pointer:    db    0
-
-            org   (($-1)|255)+1
-
-
+          ; ------------------------------------------------------------------
           ; Move the terminal cursor to the beginning of the line by emitting
           ; a backspace for each character to the left of the cursor. As we
           ; go, adjust the character counts and line buffer pointer.
@@ -585,10 +653,12 @@ copyold:    glo   rc                    ; stop copying when line is full
             ldn   r9                    ; get history byte to copy
             bnz   oldloop
 
+            phi   rb                    ; mark line as unchanged
+
           ; If the history line is the same length or longer than the current
           ; line we copied over, then we are done
 
-endcopy:    glo   rb                    ; done if nothing left to the righ
+endcopy:    glo   rb                    ; done if nothing left to the right
             bz    alldone
 
           ; Otherwise, blank the rest of the prior current line by writing
@@ -619,14 +689,17 @@ poslast:    ldi   8                    ; output a backspace to move cursor
 alldone:    lbr   inploop              ; done, go back and get keystroke
 
 
+          ; ------------------------------------------------------------------
           ; At end of input, position pointer to the end of the line, zero-
           ; terminate, and return DF if exiting due to Control-C, or DF clear
           ; if exiting due to Carriage Return. The exit status is extracted
-          ; from bit 1 of the ASCII code and stored in bit 0 of RA.1,
+          ; from bit 1 of the ASCII code and stored in bit 0 of RC.1, and
+          ; the rest of RC.1 is zeroed to failitate setting to zero at exit.
 
 endline:    glo   re                    ; set exit status accordingly
             shr
-            phi   ra
+            ani   %1
+            phi   rc
 
           ; If the input line is empty then do not save it, and there is no
           ; need to do most of the post-processing, just skip to the return.
@@ -657,9 +730,12 @@ endtest:    glo   rb
 
           ; If exiting due to control-c then do not save the line to history.
 
-            ghi   ra                    ; skip saving if exit status not 0
+            ghi   rc                    ; skip saving if exit status not 0
             shr
             bdf   skipsav
+
+            ghi   rb                    ; if line not changed do not save
+            bz    skipsav
 
           ; Adjust RF to point to the beginning of the line for copying it.
           ; All the rest is done without any updates to the terminal.
@@ -676,47 +752,40 @@ endtest:    glo   rb
 
           ; Get pointer into the saved lines buffer.
 
-            ghi   r3                    ; get pointer to history pointer
-            smi   1
-            phi   rb
-            ldi   pointer
-            plo   rb
-
-            ghi   r3                    ; get pointer to last history line
-            smi   2
-            phi   r9
-            ldn   rb
-            plo   r9
+            ldi   pointer               ; get pointer to history pointer
+            plo   ra
+            ldn   ra
+            plo   rd
 
           ; Copy the new line into the buffer after the last time. We start
           ; pointing to the zero after the last line, so we start with the
           ; increment of the buffer pointer.
 
-cpyloop:    ghi   r9                    ; increment pointer with lsb wrap
-            inc   r9
-            phi   r9
+cpyloop:    ghi   rd                    ; increment pointer with lsb wrap
+            inc   rd
+            phi   rd
 
             lda   rf                    ; copy a byte until zero reached
-            str   r9
+            str   rd
             bnz   cpyloop
 
-            glo   r9                    ; update history pointer
-            str   rb
+            glo   rd                    ; update history pointer
+            str   ra
 
           ; Fill any remaining portion of the oldest line that we overwrote
           ; with zeros so that we won't go backward past it in the future.
           ; Since we start pointing to the terminator, do the increment first.
 
-            br   fillinc                ; start loop at increment
+            br    fillinc               ; start loop at increment
 
 filloop:    ldi   0                     ; overwrite old line with zero
-            str   r9
+            str   rd
 
-fillinc:    ghi   r9                    ; increment pointer with lsb wrap
-            inc   r9
-            phi   r9
+fillinc:    ghi   rd                    ; increment pointer with lsb wrap
+            inc   rd
+            phi   rd
 
-            ldn   r9                    ; if not at zero then keep filing
+            ldn   rd                    ; if not at zero then keep filing
             bnz   filloop
 
           ; Set RC to the length of the input, set the exist status to DF,
@@ -725,8 +794,9 @@ fillinc:    ghi   r9                    ; increment pointer with lsb wrap
 skipsav:    glo   ra                    ; update rc with length of line
             plo   rc
 
-            ghi   ra                    ; get exit status and move to df
+            ghi   rc                    ; move status to df and zero rc.1
             shr
+            phi   rc
 
             irx                         ; restore terminal echo flag
             ldxa
@@ -752,9 +822,10 @@ skipsav:    glo   ra                    ; update rc with length of line
             ldx
             plo   r9
 
-            sep   sret                  ; return to called
+            sep   sret                  ; return to caller
 
 
+          ; ------------------------------------------------------------------
           ; The minfo command will look at the top of a heap block for a
           ; name if the 64 flag is set on the block, so here is a name. It
           ; needs some zero padding to copy into the block as well in case

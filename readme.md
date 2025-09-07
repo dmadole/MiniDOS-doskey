@@ -9,8 +9,17 @@ The output of DOS/Key is designed to be terminal-independent, outputting only pr
 ^K - Recall next history line
 ^L - Cursor right
 
-Additionally the DEL character (ASCII 127) is used for the delete function. For simplicity, input is always in insert mode, where any characters to the right of the cursor are moved rightward of new input.
+As of build 2, the following alternate (emacs-like) control keys also work:
 
-DOS/Key saves 256 characters of input history. The number of lines saved will vary based on the length of the line. A maximum line length of 255 bytes is supported. DOS/Key should also work under Elf/OS although this is not tested.
+^B - Cursor left
+^P - Recall previous history line
+^N - Recall next history line
+^F - Cursor right
+
+Additionally the DEL character (ASCII 127) is used for the delete function. For simplicity, input is always in insert mode, where any characters to the right of the cursor are moved rightward of new input.  As of build 2, the '-d' option may be given to cause Control-H to behave the same as DEL.
+
+DOS/Key saves 256 characters of input history. The number of lines saved will vary based on the length of the line. A maximum line length of 255 bytes is supported. As of build 2, a line recalled from history is not re-saved unless it is modified.
+
+DOS/Key should also work under Elf/OS although this is not tested.
 
 DOS/Key is named after the MS-DOS DOSKEY.EXE program which performs similar command-line editing functions.
