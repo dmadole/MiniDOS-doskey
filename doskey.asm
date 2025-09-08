@@ -32,9 +32,9 @@ start:      br    chkvers
           ; Build information
 
             db    9+80h                 ; month
-            db    6                     ; day
+            db    7                     ; day
             dw    2025                  ; year
-            dw    2                     ; build
+            dw    3                     ; build
 
             db    'See github.com/dmadole/MiniDOS-doskey for more info',0
 
@@ -102,7 +102,7 @@ dousage:    sep   scall                 ; give a hint if error
 
 loadmod:    sep   scall
             dw    o_inmsg
-            db    'DOS/Key Line Editor Build 2 for Mini/DOS',13,10,0
+            db    'DOS/Key Line Editor Build 3 for Mini/DOS',13,10,0
 
 
             ldi   1+(modend-module).1   ; length of module plus history
@@ -368,7 +368,10 @@ backkey:    bz    movleft
             smi   16-14                 ; if control-p (ascii 16)
             lbz   backwrd
  
-            smi   27-16                 ; if control-[ (ascii 27, escape)
+            smi   21-16                 ; if control-u (ascii 21)
+            lbz   eraseln
+ 
+            smi   27-21                 ; if control-[ (ascii 27, escape)
             bz    escapes
 
             smi   32-27                 ; if anything else < 32 then ignore
@@ -494,22 +497,13 @@ delskip:    sep   scall                 ; erase last character on the line
 
 
           ; ------------------------------------------------------------------
-escapes:    sep   scall                 ; get second character of escape
-            dw    o_readkey
-
-            smi   'O'                   ; if in application mode proceed
-            bz    escapes 
-
-            smi   '['-'O'               ; else if not [ then ignore rest
-            bz    escapes
-
-getnext:    sep   scall                 ; get third character of escape
+escapes:    sep   scall                 ; get next character of escape
             dw    o_readkey
 
             smi   'A'                   ; if A then previous line
             lbz   backwrd
 
-            bnf   getnext               ; absorb anything less than A
+            bnf   escapes               ; absorb anything less than A
 
             smi   'B'-'A'               ; if B then next line
             lbz   forward
@@ -519,6 +513,12 @@ getnext:    sep   scall                 ; get third character of escape
 
             smi   'D'-'C'               ; if D then cursor right
             bz    movleft
+
+            smi   'O'-'D'               ; absorb O
+            bz    escapes 
+
+            smi   '['-'O'               ; absorb [
+            bz    escapes
 
             br    inploop               ; ignore anything else
 
@@ -558,6 +558,50 @@ outchar:    sep   scall                 ; output character to move cursor
 
 
             org   (($-1)|255)+1
+
+
+          ; ------------------------------------------------------------------
+          ; Completely erase the current line: Move all the way left to the
+          ; start of the line, output spaces over the line, then move left
+          ; to start again.
+
+allleft:    ldi   8                     ; output backspace to move cursor left
+            sep   scall
+            dw    o_type
+
+            dec   ra                    ; moves from left of cursor to right
+            inc   rb
+
+eraseln:    glo   ra                    ; repeat for all to left of cursor
+            bnz   allleft
+
+            glo   rb                    ; save total length of line for later
+            plo   r9
+
+            br    erasall               ; next overwrite the line with spaces
+
+allrght:    ldi   ' '                   ; output space to overwrite character
+            sep   scall
+            dw    o_type
+
+            dec   rb                    ; less to right and less in buffer
+            inc   rc
+
+erasall:    glo   rb                    ; repeat for all characters in line
+            bnz   allrght
+
+            br    restpos               ; next restore cursor to left margin
+
+resloop:    ldi   8                     ; output backspace to move cursor left
+            sep   scall
+            dw    o_type
+
+            dec   r9                    ; repeat until all the way to left
+restpos:    glo   r9
+            bnz   resloop
+
+            lbr   inploop               ; done, get the next input
+
 
           ; ------------------------------------------------------------------
           ; Search forward for the next line in the history to restore. If

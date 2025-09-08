@@ -8,6 +8,7 @@ The output of DOS/Key is designed to be terminal-independent, outputting only pr
 ^J - Recall previous history line  
 ^K - Recall next history line  
 ^L - Cursor right  
+^U - Erase entire line (as of build 3)
 
 As of build 2, the following alternate (emacs-like) control keys also work:
 
